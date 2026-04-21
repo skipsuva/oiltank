@@ -1,0 +1,15 @@
+{
+  "hsv_lower": [
+    20,
+    100,
+    100
+  ],
+  "hsv_upper": [
+    35,
+    255,
+    255
+  ],
+  "tube_top_y": 500,
+  "tube_bottom_y": 2550,
+  "min_blob_area": 200
+}

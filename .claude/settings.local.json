@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -lh /home/skipsuva/oiltank/images/*.jpg)",
+      "Bash(venv/bin/python -)",
+      "Bash(ls:*)"
+    ]
+  }
+}
