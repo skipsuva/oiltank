@@ -43,6 +43,10 @@ DEFAULT_CALIBRATION: dict = {
     "tube_top_y": 60,
     # Minimum blob area (px²) to be considered a real float detection.
     "min_blob_area": 200,
+    # Horizontal extent of the tube in pixels. Blobs outside this x-range are
+    # ignored. Defaults to None (full image width) when not set in calibration.
+    "tube_left_x": None,
+    "tube_right_x": None,
 }
 
 
@@ -124,6 +128,9 @@ def detect_level(image_bgr: np.ndarray) -> DetectionResult:
     tube_bottom_y: int = int(cal["tube_bottom_y"])
     tube_top_y: int = int(cal["tube_top_y"])
     min_blob_area: int = int(cal["min_blob_area"])
+    h_img, w_img = image_bgr.shape[:2]
+    tube_left_x: int = int(cal["tube_left_x"]) if cal.get("tube_left_x") is not None else 0
+    tube_right_x: int = int(cal["tube_right_x"]) if cal.get("tube_right_x") is not None else w_img
 
     annotated = image_bgr.copy()
 
@@ -134,19 +141,28 @@ def detect_level(image_bgr: np.ndarray) -> DetectionResult:
     mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
 
     # ------------------------------------------------------------------
-    # 2. Morphological cleanup: erode removes noise, dilate restores size.
+    # 2. Restrict search to the tube region (y and optional x bounds).
+    #    Zero out pixels outside the tube extent so background objects
+    #    are never considered, regardless of their size or color match.
+    # ------------------------------------------------------------------
+    roi_mask = np.zeros_like(mask)
+    roi_mask[tube_top_y:tube_bottom_y + 1, tube_left_x:tube_right_x + 1] = 255
+    mask = cv2.bitwise_and(mask, roi_mask)
+
+    # ------------------------------------------------------------------
+    # 3. Morphological cleanup: erode removes noise, dilate restores size.
     # ------------------------------------------------------------------
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     mask = cv2.erode(mask, kernel, iterations=1)
     mask = cv2.dilate(mask, kernel, iterations=2)
 
     # ------------------------------------------------------------------
-    # 3. Find contours and pick the largest blob.
+    # 4. Find contours and pick the largest blob.
     # ------------------------------------------------------------------
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not contours:
-        _draw_no_detection(annotated, tube_top_y, tube_bottom_y)
+        _draw_no_detection(annotated, tube_top_y, tube_bottom_y, tube_left_x, tube_right_x)
         return DetectionResult(
             y_px=None,
             level_label="UNKNOWN",
@@ -159,7 +175,7 @@ def detect_level(image_bgr: np.ndarray) -> DetectionResult:
     area = cv2.contourArea(largest)
 
     if area < min_blob_area:
-        _draw_no_detection(annotated, tube_top_y, tube_bottom_y)
+        _draw_no_detection(annotated, tube_top_y, tube_bottom_y, tube_left_x, tube_right_x)
         return DetectionResult(
             y_px=None,
             level_label="UNKNOWN",
@@ -169,12 +185,12 @@ def detect_level(image_bgr: np.ndarray) -> DetectionResult:
         )
 
     # ------------------------------------------------------------------
-    # 4. Compute centroid and level fraction.
+    # 5. Compute centroid and level fraction.
     # ------------------------------------------------------------------
     M = cv2.moments(largest)
     if M["m00"] == 0:
         # Degenerate contour — treat as no detection.
-        _draw_no_detection(annotated, tube_top_y, tube_bottom_y)
+        _draw_no_detection(annotated, tube_top_y, tube_bottom_y, tube_left_x, tube_right_x)
         return DetectionResult(
             y_px=None,
             level_label="UNKNOWN",
@@ -202,7 +218,7 @@ def detect_level(image_bgr: np.ndarray) -> DetectionResult:
     level_label = _fraction_to_label(fraction)
 
     # ------------------------------------------------------------------
-    # 5. Confidence: blend of area score and circularity.
+    # 6. Confidence: blend of area score and circularity.
     #    Area score saturates at 10× the minimum blob area.
     #    Circularity score is the raw circularity (0–1).
     # ------------------------------------------------------------------
@@ -214,10 +230,10 @@ def detect_level(image_bgr: np.ndarray) -> DetectionResult:
     confidence = max(0.0, min(1.0, confidence))
 
     # ------------------------------------------------------------------
-    # 6. Draw annotation overlay.
+    # 7. Draw annotation overlay.
     # ------------------------------------------------------------------
     _draw_detection(annotated, largest, cx, cy, fraction, level_label, confidence,
-                    tube_top_y, tube_bottom_y)
+                    tube_top_y, tube_bottom_y, tube_left_x, tube_right_x)
 
     return DetectionResult(
         y_px=cy,
@@ -242,12 +258,14 @@ def _draw_detection(
     confidence: float,
     tube_top_y: int,
     tube_bottom_y: int,
+    tube_left_x: int = 0,
+    tube_right_x: int | None = None,
 ) -> None:
     """Draw contour, centroid, level line, and text onto *img* in-place."""
     # Tube extent markers
     h, w = img.shape[:2]
-    cv2.line(img, (0, tube_top_y), (w, tube_top_y), (0, 255, 0), 1)
-    cv2.line(img, (0, tube_bottom_y), (w, tube_bottom_y), (0, 255, 0), 1)
+    right = tube_right_x if tube_right_x is not None else w
+    cv2.rectangle(img, (tube_left_x, tube_top_y), (right, tube_bottom_y), (0, 255, 0), 1)
 
     # Detected blob outline
     cv2.drawContours(img, [contour], -1, (0, 165, 255), 2)
@@ -264,11 +282,12 @@ def _draw_detection(
     cv2.putText(img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 1)
 
 
-def _draw_no_detection(img: np.ndarray, tube_top_y: int, tube_bottom_y: int) -> None:
+def _draw_no_detection(img: np.ndarray, tube_top_y: int, tube_bottom_y: int,
+                       tube_left_x: int = 0, tube_right_x: int | None = None) -> None:
     """Draw a 'no detection' banner onto *img* in-place."""
     h, w = img.shape[:2]
-    cv2.line(img, (0, tube_top_y), (w, tube_top_y), (0, 255, 0), 1)
-    cv2.line(img, (0, tube_bottom_y), (w, tube_bottom_y), (0, 255, 0), 1)
+    right = tube_right_x if tube_right_x is not None else w
+    cv2.rectangle(img, (tube_left_x, tube_top_y), (right, tube_bottom_y), (0, 255, 0), 1)
     text = "NO DETECTION"
     cv2.putText(img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
     cv2.putText(img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 1)

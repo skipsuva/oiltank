@@ -28,6 +28,8 @@ DEFAULT_CALIBRATION: dict = {
     "tube_bottom_y": 420,
     "tube_top_y": 60,
     "min_blob_area": 200,
+    "tube_left_x": None,
+    "tube_right_x": None,
 }
 
 
@@ -48,10 +50,15 @@ def _make_ruler_image(
     tube_bottom_y: int,
     hsv_lower: list,
     hsv_upper: list,
+    tube_left_x: int | None = None,
+    tube_right_x: int | None = None,
 ) -> np.ndarray:
-    """Return annotated copy of img_bgr with ruler, tube lines, and HSV mask."""
+    """Return annotated copy of img_bgr with rulers, tube box, and HSV mask."""
     out = img_bgr.copy()
     h, w = out.shape[:2]
+
+    left_x = tube_left_x if tube_left_x is not None else 0
+    right_x = tube_right_x if tube_right_x is not None else w - 1
 
     # HSV mask — detected pixels painted red.
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
@@ -62,7 +69,7 @@ def _make_ruler_image(
     )
     out[mask > 0] = (0, 0, 255)
 
-    # Y-axis ruler: tick + label every 50 px.
+    # Y-axis ruler: tick + label every 50 px along the left edge.
     for y in range(0, h, 50):
         cv2.line(out, (0, y), (28, y), (255, 255, 255), 1)
         label_y = max(y + 10, 10)
@@ -75,13 +82,34 @@ def _make_ruler_image(
             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1,
         )
 
-    # Tube extent lines.
+    # X-axis ruler: tick + label every 50 px along the bottom edge.
+    for x in range(0, w, 50):
+        cv2.line(out, (x, h - 1), (x, h - 18), (255, 255, 255), 1)
+        label_x = min(x + 2, w - 35)
+        cv2.putText(
+            out, str(x), (label_x, h - 4),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.30, (0, 0, 0), 2,
+        )
+        cv2.putText(
+            out, str(x), (label_x, h - 4),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.30, (255, 255, 255), 1,
+        )
+
+    # Tube extent box (y extents + x bounds).
+    cv2.rectangle(out, (left_x, tube_top_y), (right_x, tube_bottom_y), (0, 255, 0), 2)
+
+    # Labels for y extents.
     for y, tag in ((tube_top_y, f"F  tube_top_y={tube_top_y}"),
                    (tube_bottom_y, f"E  tube_bottom_y={tube_bottom_y}")):
-        cv2.line(out, (0, y), (w, y), (0, 255, 0), 2)
         text_y = max(y - 6, 12)
-        cv2.putText(out, tag, (35, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
-        cv2.putText(out, tag, (35, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1)
+        cv2.putText(out, tag, (left_x + 5, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
+        cv2.putText(out, tag, (left_x + 5, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1)
+
+    # Labels for x extents (drawn just inside the box, near the top).
+    for x, tag in ((left_x, f"L={left_x}"), (right_x, f"R={right_x}")):
+        text_x = max(x - 5, 2) if x == right_x else x + 5
+        cv2.putText(out, tag, (text_x, tube_top_y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
+        cv2.putText(out, tag, (text_x, tube_top_y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
 
     return out
 
@@ -89,6 +117,16 @@ def _make_ruler_image(
 def _prompt_int(prompt: str, default: int) -> int:
     val = input(f"  {prompt} [{default}]: ").strip()
     return int(val) if val else default
+
+
+def _prompt_optional_int(prompt: str, default: int | None) -> int | None:
+    default_str = str(default) if default is not None else "none"
+    val = input(f"  {prompt} [{default_str}] (Enter to keep, 'none' to clear): ").strip().lower()
+    if val in ("", ):
+        return default
+    if val == "none":
+        return None
+    return int(val)
 
 
 def _scp_hint(path: Path) -> str:
@@ -132,11 +170,14 @@ def main() -> None:
         cal["tube_bottom_y"],
         cal["hsv_lower"],
         cal["hsv_upper"],
+        cal.get("tube_left_x"),
+        cal.get("tube_right_x"),
     )
     cv2.imwrite(str(ruler_path), ruler_img)
 
     print(f"\nRuler image saved: {ruler_path}")
-    print("Green lines = current tube extents.  Red pixels = current yellow mask.")
+    print("Green box = current tube region.  Red pixels = current yellow mask.")
+    print("Y-axis ruler runs along the left edge; X-axis ruler along the bottom.")
     print("SCP to your machine to view:")
     print(_scp_hint(ruler_path))
     input("\nPress Enter when ready to enter calibration values...")
@@ -147,6 +188,12 @@ def main() -> None:
     print("\nTube extents (y=0 is top of frame, larger y is lower):")
     tube_top_y    = _prompt_int("tube_top_y   (Full mark — smaller number)", cal["tube_top_y"])
     tube_bottom_y = _prompt_int("tube_bottom_y (Empty mark — larger number)", cal["tube_bottom_y"])
+
+    print("\nTube horizontal bounds (x=0 is left edge of frame):")
+    print("  Restrict detection to the tube column range to ignore background objects.")
+    print("  Leave as 'none' to search the full image width.")
+    tube_left_x  = _prompt_optional_int("tube_left_x  (left edge of tube)", cal.get("tube_left_x"))
+    tube_right_x = _prompt_optional_int("tube_right_x (right edge of tube)", cal.get("tube_right_x"))
 
     print("\nHSV yellow bounds (hue 0-180, saturation/value 0-255):")
     print("  Yellow hue is roughly 20-35. Adjust if the float colour differs.")
@@ -164,6 +211,8 @@ def main() -> None:
         "tube_top_y": tube_top_y,
         "tube_bottom_y": tube_bottom_y,
         "min_blob_area": min_blob_area,
+        "tube_left_x": tube_left_x,
+        "tube_right_x": tube_right_x,
     }
 
     # Generate validation image with new settings.
@@ -174,6 +223,8 @@ def main() -> None:
         tube_bottom_y,
         new_cal["hsv_lower"],
         new_cal["hsv_upper"],
+        tube_left_x,
+        tube_right_x,
     )
     cv2.imwrite(str(val_path), val_img)
 
