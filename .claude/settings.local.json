@@ -4,7 +4,8 @@
       "Bash(ls -lh /home/skipsuva/oiltank/images/*.jpg)",
       "Bash(venv/bin/python -)",
       "Bash(ls:*)",
-      "Bash(venv/bin/python -c \"import calibrate; print\\('OK'\\)\")"
+      "Bash(venv/bin/python -c \"import calibrate; print\\('OK'\\)\")",
+      "Bash(venv/bin/python -c \"import web; print\\('OK'\\)\")"
     ]
   }
 }

@@ -11,9 +11,10 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, Response
+from flask import Flask, Response, send_from_directory
 
 CSV_PATH = Path("~/oiltank/logs/readings.csv").expanduser()
+IMAGES_DIR = Path("~/oiltank/images").expanduser()
 PORT = 8080
 
 app = Flask(__name__)
@@ -35,6 +36,7 @@ def _load_readings() -> list[dict]:
                 "level_label": row.get("level_label", ""),
                 "percentage": round(pct * 100, 1),
                 "confidence": row.get("confidence", ""),
+                "image_path": row.get("image_path", ""),
             })
     return rows
 
@@ -48,6 +50,13 @@ def index() -> Response:
     # Build JS arrays for Chart.js
     labels = json.dumps([r["timestamp"] for r in rows])
     values = json.dumps([r["percentage"] for r in rows])
+
+    annotated_url = None
+    if last and last.get("image_path"):
+        raw = Path(last["image_path"])
+        annotated = raw.with_name(raw.stem + "_annotated" + raw.suffix)
+        if annotated.exists():
+            annotated_url = f"/images/{annotated.name}"
 
     if last:
         last_time = last["timestamp"]
@@ -87,6 +96,9 @@ def index() -> Response:
   .meta {{ font-size: 0.75rem; color: #475569; margin-top: 8px; }}
   .chart-wrap {{ background: #1e293b; border-radius: 12px; padding: 16px; }}
   canvas {{ width: 100% !important; }}
+  .image-wrap {{ background: #1e293b; border-radius: 12px; padding: 16px;
+                 margin-top: 16px; text-align: center; }}
+  .image-wrap img {{ max-width: 100%; border-radius: 8px; display: block; margin: 0 auto; }}
 </style>
 </head>
 <body>
@@ -95,6 +107,10 @@ def index() -> Response:
 <div class="chart-wrap">
   <canvas id="chart"></canvas>
 </div>
+{"" if not annotated_url else f'''<div class="image-wrap">
+  <div class="label" style="margin-bottom:10px">Latest Detection</div>
+  <img src="{annotated_url}" alt="Latest annotated detection">
+</div>'''}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script>
 const labels = {labels};
@@ -144,6 +160,11 @@ new Chart(document.getElementById("chart"), {{
 </html>"""
 
     return Response(html, mimetype="text/html")
+
+
+@app.route("/images/<path:filename>")
+def serve_image(filename: str) -> Response:
+    return send_from_directory(IMAGES_DIR, filename)
 
 
 if __name__ == "__main__":
