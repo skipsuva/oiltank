@@ -5,7 +5,9 @@
       "Bash(venv/bin/python -)",
       "Bash(ls:*)",
       "Bash(venv/bin/python -c \"import calibrate; print\\('OK'\\)\")",
-      "Bash(venv/bin/python -c \"import web; print\\('OK'\\)\")"
+      "Bash(venv/bin/python -c \"import web; print\\('OK'\\)\")",
+      "Bash(grep -E '\\\\.\\(py|sh|service\\)$|^d')",
+      "Bash(crontab -l)"
     ]
   }
 }

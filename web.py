@@ -8,10 +8,12 @@ Access at: http://<pi-ip>:8080
 
 import csv
 import json
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, Response, send_from_directory
+from flask import Flask, Response, jsonify, send_from_directory
 
 CSV_PATH = Path("~/oiltank/logs/readings.csv").expanduser()
 IMAGES_DIR = Path("~/oiltank/images").expanduser()
@@ -60,9 +62,11 @@ def index() -> Response:
 
     if last:
         last_time = last["timestamp"]
+        short_time = ""
         try:
             dt = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S")
             last_time = dt.strftime("%b %-d, %Y at %-I:%M %p")
+            short_time = dt.strftime("%-m/%-d, %-I:%M%p").lower()
         except ValueError:
             pass
         summary_html = f"""
@@ -85,8 +89,13 @@ def index() -> Response:
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           background: #0f172a; color: #e2e8f0; padding: 16px; }}
-  h1 {{ font-size: 1.2rem; font-weight: 600; margin-bottom: 16px;
+  .header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }}
+  h1 {{ font-size: 1.2rem; font-weight: 600;
         color: #94a3b8; letter-spacing: 0.05em; text-transform: uppercase; }}
+  .btn-capture {{ font-size: 0.8rem; font-weight: 600; padding: 6px 14px;
+                  border-radius: 8px; border: none; cursor: pointer;
+                  background: #38bdf8; color: #0f172a; transition: opacity 0.15s; }}
+  .btn-capture:disabled {{ opacity: 0.5; cursor: not-allowed; }}
   .card {{ background: #1e293b; border-radius: 12px; padding: 20px;
             margin-bottom: 16px; text-align: center; }}
   .label {{ font-size: 0.8rem; color: #64748b; text-transform: uppercase;
@@ -102,15 +111,38 @@ def index() -> Response:
 </style>
 </head>
 <body>
-<h1>Oil Tank Monitor</h1>
+<div class="header">
+  <h1>Oil Tank Monitor</h1>
+  <button class="btn-capture" id="captureBtn" onclick="captureNow()">Capture level now</button>
+</div>
 {summary_html}
 <div class="chart-wrap">
   <canvas id="chart"></canvas>
 </div>
 {"" if not annotated_url else f'''<div class="image-wrap">
-  <div class="label" style="margin-bottom:10px">Latest Detection</div>
+  <div class="label" style="margin-bottom:10px">Latest Detection &nbsp;&bull;&nbsp; {short_time}</div>
   <img src="{annotated_url}" alt="Latest annotated detection">
 </div>'''}
+<script>
+async function captureNow() {{
+  const btn = document.getElementById("captureBtn");
+  btn.disabled = true;
+  btn.textContent = "Running…";
+  try {{
+    const res = await fetch("/capture", {{ method: "POST" }});
+    const data = await res.json();
+    if (data.ok) {{
+      location.reload();
+    }} else {{
+      btn.textContent = "Failed";
+      setTimeout(() => {{ btn.disabled = false; btn.textContent = "Capture level now"; }}, 3000);
+    }}
+  }} catch (e) {{
+    btn.textContent = "Error";
+    setTimeout(() => {{ btn.disabled = false; btn.textContent = "Capture level now"; }}, 3000);
+  }}
+}}
+</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script>
 const labels = {labels};
@@ -162,10 +194,32 @@ new Chart(document.getElementById("chart"), {{
     return Response(html, mimetype="text/html")
 
 
+OILTANK_DIR = Path("~/oiltank").expanduser()
+
+
+@app.route("/capture", methods=["POST"])
+def capture() -> Response:
+    try:
+        result = subprocess.run(
+            [str(OILTANK_DIR / "venv/bin/python"), "run.py"],
+            cwd=OILTANK_DIR,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if result.returncode == 0:
+            return jsonify({"ok": True})
+        return jsonify({"ok": False, "error": result.stderr or result.stdout}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "error": "Timed out after 3 minutes"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/images/<path:filename>")
 def serve_image(filename: str) -> Response:
     return send_from_directory(IMAGES_DIR, filename)
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
