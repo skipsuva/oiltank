@@ -39,7 +39,7 @@ CSV_COLUMNS = ["timestamp", "level_label", "percentage", "confidence", "image_pa
 # ---------------------------------------------------------------------------
 CONFIDENCE_THRESHOLD = 0.5
 RETRY_DELAY_SECONDS = 60
-IMAGE_RETENTION_DAYS = 14
+IMAGE_RETENTION_DAYS = 7
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ def _purge_old_images() -> None:
     """Delete images (original and annotated) older than IMAGE_RETENTION_DAYS."""
     cutoff = datetime.now() - timedelta(days=IMAGE_RETENTION_DAYS)
     removed = 0
-    for img_path in IMAGES_DIR.glob("*.jpg"):
+    for img_path in IMAGES_DIR.glob("[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*.jpg"):
         try:
             mtime = datetime.fromtimestamp(img_path.stat().st_mtime)
             if mtime < cutoff:
