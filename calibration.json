@@ -9,9 +9,9 @@
     255,
     255
   ],
-  "tube_top_y": 500,
-  "tube_bottom_y": 2550,
+  "tube_top_y": 205,
+  "tube_bottom_y": 2310,
   "min_blob_area": 200,
-  "tube_left_x": 2150,
-  "tube_right_x": 2750
+  "tube_left_x": 2050,
+  "tube_right_x": 2685
 }
