@@ -10,7 +10,7 @@ import csv
 import json
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, send_from_directory
@@ -43,11 +43,54 @@ def _load_readings() -> list[dict]:
     return rows
 
 
+def _consumption_since(rows: list[dict], hours: float) -> float | None:
+    """Return percentage-point drop over the past `hours` hours, or None if insufficient data."""
+    if len(rows) < 2:
+        return None
+    last = rows[-1]
+    try:
+        current_dt = datetime.strptime(last["timestamp"], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    target_dt = current_dt - timedelta(hours=hours)
+    min_age_hours = hours * 0.5
+    best, best_diff = None, None
+    for r in rows[:-1]:
+        try:
+            dt = datetime.strptime(r["timestamp"], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        age_hours = (current_dt - dt).total_seconds() / 3600
+        if age_hours < min_age_hours:
+            continue
+        diff = abs((dt - target_dt).total_seconds())
+        if best_diff is None or diff < best_diff:
+            best, best_diff = r, diff
+    if best is None:
+        return None
+    return round(best["percentage"] - last["percentage"], 1)
+
+
 @app.route("/")
 def index() -> Response:
     rows = _load_readings()
 
     last = rows[-1] if rows else None
+
+    day_usage = _consumption_since(rows, 24) if rows else None
+    week_usage = _consumption_since(rows, 24 * 7) if rows else None
+
+    def _fmt_usage(val: float | None) -> str:
+        if val is None:
+            return "—"
+        if val > 0:
+            return f"▼ {val}%"
+        if val < 0:
+            return f"▲ {abs(val)}%"
+        return "stable"
+
+    day_html = _fmt_usage(day_usage)
+    week_html = _fmt_usage(week_usage)
 
     # Build JS arrays for Chart.js
     labels = json.dumps([r["timestamp"] for r in rows])
@@ -70,11 +113,23 @@ def index() -> Response:
         except ValueError:
             pass
         summary_html = f"""
-        <div class="card">
-          <div class="label">Current Level</div>
-          <div class="level">{last['level_label']}</div>
-          <div class="pct">{last['percentage']}%</div>
-          <div class="meta">conf {last['confidence']} &nbsp;&bull;&nbsp; {last_time}</div>
+        <div class="summary-row">
+          <div class="card summary-main">
+            <div class="label">Current Level</div>
+            <div class="level">{last['level_label']}</div>
+            <div class="pct">{last['percentage']}%</div>
+            <div class="meta">conf {last['confidence']} &nbsp;&bull;&nbsp; {last_time}</div>
+          </div>
+          <div class="summary-side">
+            <div class="stat-card">
+              <div class="label">Past 24 h</div>
+              <div class="stat-val">{day_html}</div>
+            </div>
+            <div class="stat-card">
+              <div class="label">Past 7 days</div>
+              <div class="stat-val">{week_html}</div>
+            </div>
+          </div>
         </div>"""
     else:
         summary_html = '<div class="card"><div class="label">No readings yet.</div></div>'
@@ -103,6 +158,13 @@ def index() -> Response:
   .level {{ font-size: 2.8rem; font-weight: 700; color: #f8fafc; line-height: 1; }}
   .pct {{ font-size: 1.2rem; color: #94a3b8; margin-top: 4px; }}
   .meta {{ font-size: 0.75rem; color: #475569; margin-top: 8px; }}
+  .summary-row {{ display: flex; gap: 12px; align-items: stretch; margin-bottom: 16px; flex-wrap: wrap; }}
+  .summary-main {{ flex: 1 1 200px; margin-bottom: 0; }}
+  .summary-side {{ display: flex; flex-direction: column; gap: 12px; min-width: 120px; flex: 0 0 auto; }}
+  .stat-card {{ background: #1e293b; border-radius: 12px; padding: 16px 20px;
+               text-align: center; flex: 1; display: flex; flex-direction: column;
+               justify-content: center; }}
+  .stat-val {{ font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-top: 6px; }}
   .chart-wrap {{ background: #1e293b; border-radius: 12px; padding: 16px; }}
   canvas {{ width: 100% !important; }}
   .image-wrap {{ background: #1e293b; border-radius: 12px; padding: 16px;

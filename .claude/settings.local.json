@@ -10,7 +10,9 @@
       "Bash(crontab -l)",
       "Bash(grep -E \"\\\\.py$|\\\\.json$|\\\\.md$|cron|timer\")",
       "Bash(sudo crontab:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(sudo systemctl:*)",
+      "Bash(curl -s http://localhost:8080/)"
     ]
   }
 }
