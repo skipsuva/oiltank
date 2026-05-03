@@ -71,6 +71,23 @@ def _consumption_since(rows: list[dict], hours: float) -> float | None:
     return round(best["percentage"] - last["percentage"], 1)
 
 
+LOW_THRESHOLD = 25.0  # percentage points
+
+
+def _days_to_threshold(rows: list[dict], week_usage: float | None) -> str:
+    """Estimate days until tank hits LOW_THRESHOLD using 7-day burn rate."""
+    if not rows or week_usage is None or week_usage <= 0:
+        return "—"
+    current_pct = rows[-1]["percentage"]
+    if current_pct <= LOW_THRESHOLD:
+        return "Now"
+    daily_rate = week_usage / 7
+    days = (current_pct - LOW_THRESHOLD) / daily_rate
+    if days > 180:
+        return ">6 mo"
+    return f"~{round(days)} days"
+
+
 @app.route("/")
 def index() -> Response:
     rows = _load_readings()
@@ -79,6 +96,7 @@ def index() -> Response:
 
     day_usage = _consumption_since(rows, 24) if rows else None
     week_usage = _consumption_since(rows, 24 * 7) if rows else None
+    refill_in = _days_to_threshold(rows, week_usage)
 
     def _fmt_usage(val: float | None) -> str:
         if val is None:
@@ -129,6 +147,10 @@ def index() -> Response:
               <div class="label">Past 7 days</div>
               <div class="stat-val">{week_html}</div>
             </div>
+            <div class="stat-card">
+              <div class="label">Refill in</div>
+              <div class="stat-val">{refill_in}</div>
+            </div>
           </div>
         </div>"""
     else:
@@ -161,10 +183,10 @@ def index() -> Response:
   .summary-row {{ display: flex; gap: 12px; align-items: stretch; margin-bottom: 16px; flex-wrap: wrap; }}
   .summary-main {{ flex: 1 1 200px; margin-bottom: 0; }}
   .summary-side {{ display: flex; flex-direction: column; gap: 12px; min-width: 120px; flex: 0 0 auto; }}
-  .stat-card {{ background: #1e293b; border-radius: 12px; padding: 16px 20px;
+  .stat-card {{ background: #1e293b; border-radius: 12px; padding: 10px 16px;
                text-align: center; flex: 1; display: flex; flex-direction: column;
                justify-content: center; }}
-  .stat-val {{ font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-top: 6px; }}
+  .stat-val {{ font-size: 1.1rem; font-weight: 700; color: #f8fafc; margin-top: 4px; }}
   .chart-wrap {{ background: #1e293b; border-radius: 12px; padding: 16px; }}
   canvas {{ width: 100% !important; }}
   .chart-controls {{ display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }}

@@ -12,7 +12,8 @@
       "Bash(sudo crontab:*)",
       "Bash(grep:*)",
       "Bash(sudo systemctl:*)",
-      "Bash(curl -s http://localhost:8080/)"
+      "Bash(curl -s http://localhost:8080/)",
+      "Bash(find /home/skipsuva/oiltank -name \"*.py\" -type f ! -path \"*/venv/*\" -exec wc -l {} +)"
     ]
   }
 }
