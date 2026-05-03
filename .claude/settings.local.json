@@ -16,7 +16,10 @@
       "Bash(find /home/skipsuva/oiltank -name \"*.py\" -type f ! -path \"*/venv/*\" -exec wc -l {} +)",
       "Bash(systemctl status:*)",
       "Bash(python3 -c \"import urllib.request; print\\('urllib ok'\\)\")",
-      "Bash(venv/bin/python:*)"
+      "Bash(venv/bin/python:*)",
+      "WebFetch(domain:www.eia.gov)",
+      "WebFetch(domain:pypi.org)",
+      "WebSearch"
     ]
   }
 }

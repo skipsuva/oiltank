@@ -151,7 +151,17 @@ def index() -> Response:
     day_html = _fmt_usage(day_usage)
     week_html = _fmt_usage(week_usage)
 
+    prices_rows = _load_prices()
+
     price_html = f"${price:.2f}/gal" if price is not None else "—"
+    if prices_rows:
+        try:
+            pd = datetime.strptime(prices_rows[-1]["period"], "%Y-%m-%d")
+            price_as_of = pd.strftime("%b %-d")
+        except ValueError:
+            price_as_of = prices_rows[-1]["period"]
+    else:
+        price_as_of = None
     if price is not None and last:
         gallons_remaining = (last["percentage"] / 100) * tank_capacity
         gallons_needed = tank_capacity - gallons_remaining
@@ -162,8 +172,6 @@ def index() -> Response:
     # Build JS arrays for Chart.js
     labels = json.dumps([r["timestamp"] for r in rows])
     values = json.dumps([r["percentage"] for r in rows])
-
-    prices_rows = _load_prices()
     price_labels = json.dumps([r["period"][5:] for r in prices_rows])
     price_values = json.dumps([r["price"] for r in prices_rows])
 
@@ -210,6 +218,7 @@ def index() -> Response:
           <div class="stat-card">
             <div class="label">Oil price</div>
             <div class="stat-val">{price_html}</div>
+            {"" if not price_as_of else f'<div class="meta">as of {price_as_of}</div>'}
           </div>
           <div class="stat-card">
             <div class="label">Est. refill</div>
@@ -263,6 +272,14 @@ def index() -> Response:
   .image-wrap {{ background: #1e293b; border-radius: 12px; padding: 16px;
                  margin-top: 16px; text-align: center; }}
   .image-wrap img {{ max-width: 100%; border-radius: 8px; display: block; margin: 0 auto; }}
+  .price-entry-wrap {{ display:flex; gap:8px; align-items:center; background:#1e293b;
+                       border-radius:12px; padding:12px 16px; margin-top:16px; flex-wrap:wrap; }}
+  .price-entry-wrap input {{ background:#0f172a; border:1px solid #334155; border-radius:8px;
+                             color:#e2e8f0; padding:6px 10px; font-size:0.85rem; }}
+  .price-entry-wrap input[type="number"] {{ width:90px; }}
+  .price-entry-wrap button {{ background:#38bdf8; color:#0f172a; border:none; border-radius:8px;
+                              padding:6px 14px; font-size:0.8rem; font-weight:600; cursor:pointer; }}
+  #priceMsg {{ font-size:0.8rem; color:#64748b; }}
 </style>
 </head>
 <body>
@@ -280,6 +297,13 @@ def index() -> Response:
   </div>
   <canvas id="chartLevel"></canvas>
   <canvas id="chartPrices" style="display:none"></canvas>
+</div>
+<div class="price-entry-wrap">
+  <span class="label">Add price</span>
+  <input type="date" id="priceDate">
+  <input type="number" id="priceVal" step="0.01" min="0" placeholder="$/gal">
+  <button onclick="submitPrice()">Save</button>
+  <span id="priceMsg"></span>
 </div>
 {"" if not annotated_url else f'''<div class="image-wrap">
   <div class="label" style="margin-bottom:10px">Latest Detection &nbsp;&bull;&nbsp; {short_time}</div>
@@ -455,6 +479,26 @@ function setMode(mode) {{
   document.getElementById("btnDaily").classList.toggle("inactive", mode !== "daily");
   document.getElementById("btnPrices").classList.toggle("inactive", mode !== "prices");
 }}
+
+document.getElementById("priceDate").valueAsDate = new Date();
+
+async function submitPrice() {{
+  const date = document.getElementById("priceDate").value;
+  const price = document.getElementById("priceVal").value;
+  const msg = document.getElementById("priceMsg");
+  if (!date || !price) {{ msg.textContent = "Enter date and price."; return; }}
+  const body = new FormData();
+  body.append("date", date);
+  body.append("price", price);
+  const res = await fetch("/prices/manual", {{ method: "POST", body }});
+  const data = await res.json();
+  if (data.ok) {{
+    msg.textContent = "Saved!";
+    setTimeout(() => location.reload(), 800);
+  }} else {{
+    msg.textContent = "Error: " + data.error;
+  }}
+}}
 </script>
 </body>
 </html>"""
@@ -482,6 +526,33 @@ def capture() -> Response:
         return jsonify({"ok": False, "error": "Timed out after 3 minutes"}), 500
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/prices/manual", methods=["POST"])
+def add_manual_price() -> Response:
+    from flask import request
+    try:
+        date_str = request.form["date"].strip()
+        price = float(request.form["price"])
+        datetime.strptime(date_str, "%Y-%m-%d")
+        if price <= 0:
+            raise ValueError("price must be positive")
+    except (KeyError, ValueError) as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    write_header = not PRICES_CSV_PATH.exists()
+    PRICES_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with PRICES_CSV_PATH.open("a", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["period", "price_usd_per_gallon", "series", "fetched_at"])
+        if write_header:
+            writer.writeheader()
+        writer.writerow({
+            "period": date_str,
+            "price_usd_per_gallon": round(price, 2),
+            "series": "MANUAL",
+            "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    return jsonify({"ok": True})
 
 
 @app.route("/images/<path:filename>")
