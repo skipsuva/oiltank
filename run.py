@@ -195,6 +195,12 @@ def main() -> None:
     except Exception as exc:
         print(f"WARNING: Notification failed: {exc}", file=sys.stderr)
 
+    try:
+        from prices import fetch_and_store_prices
+        fetch_and_store_prices()
+    except Exception as exc:
+        print(f"WARNING: Price fetch failed: {exc}", file=sys.stderr)
+
     _purge_old_images()
     _print_summary(result, image_path)
 

@@ -16,10 +16,47 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, send_from_directory
 
 CSV_PATH = Path("~/oiltank/logs/readings.csv").expanduser()
+PRICES_CSV_PATH = Path("~/oiltank/logs/prices.csv").expanduser()
+CONFIG_PATH = Path("~/oiltank/config.json").expanduser()
 IMAGES_DIR = Path("~/oiltank/images").expanduser()
 PORT = 8080
 
 app = Flask(__name__)
+
+
+def _load_config() -> dict:
+    try:
+        with CONFIG_PATH.open() as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _load_prices() -> list[dict]:
+    """Return all price rows sorted by period ascending. Empty list on any error."""
+    cfg = _load_config()
+    if not cfg.get("eia_api_key", "").strip():
+        return []
+    if not PRICES_CSV_PATH.exists():
+        return []
+    rows = []
+    try:
+        with PRICES_CSV_PATH.open(newline="") as fh:
+            for row in csv.DictReader(fh):
+                period = row.get("period", "")
+                try:
+                    rows.append({"period": period, "price": float(row["price_usd_per_gallon"])})
+                except (ValueError, KeyError):
+                    continue
+    except OSError:
+        return []
+    rows.sort(key=lambda r: r["period"])
+    return rows
+
+
+def _load_latest_price() -> float | None:
+    rows = _load_prices()
+    return rows[-1]["price"] if rows else None
 
 
 def _load_readings() -> list[dict]:
@@ -98,6 +135,10 @@ def index() -> Response:
     week_usage = _consumption_since(rows, 24 * 7) if rows else None
     refill_in = _days_to_threshold(rows, week_usage)
 
+    cfg = _load_config()
+    tank_capacity = float(cfg.get("tank_capacity_gallons", 275))
+    price = _load_latest_price()
+
     def _fmt_usage(val: float | None) -> str:
         if val is None:
             return "—"
@@ -110,9 +151,21 @@ def index() -> Response:
     day_html = _fmt_usage(day_usage)
     week_html = _fmt_usage(week_usage)
 
+    price_html = f"${price:.2f}/gal" if price is not None else "—"
+    if price is not None and last:
+        gallons_remaining = (last["percentage"] / 100) * tank_capacity
+        gallons_needed = tank_capacity - gallons_remaining
+        refill_cost_html = f"~${gallons_needed * price:,.0f}"
+    else:
+        refill_cost_html = "—"
+
     # Build JS arrays for Chart.js
     labels = json.dumps([r["timestamp"] for r in rows])
     values = json.dumps([r["percentage"] for r in rows])
+
+    prices_rows = _load_prices()
+    price_labels = json.dumps([r["period"][5:] for r in prices_rows])
+    price_values = json.dumps([r["price"] for r in prices_rows])
 
     annotated_url = None
     if last and last.get("image_path"):
@@ -147,10 +200,20 @@ def index() -> Response:
               <div class="label">Past 7 days</div>
               <div class="stat-val">{week_html}</div>
             </div>
-            <div class="stat-card">
-              <div class="label">Refill in</div>
-              <div class="stat-val">{refill_in}</div>
-            </div>
+          </div>
+        </div>
+        <div class="summary-bottom">
+          <div class="stat-card">
+            <div class="label">Refill in</div>
+            <div class="stat-val">{refill_in}</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Oil price</div>
+            <div class="stat-val">{price_html}</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Est. refill</div>
+            <div class="stat-val">{refill_cost_html}</div>
           </div>
         </div>"""
     else:
@@ -180,9 +243,11 @@ def index() -> Response:
   .level {{ font-size: 2.8rem; font-weight: 700; color: #f8fafc; line-height: 1; }}
   .pct {{ font-size: 1.2rem; color: #94a3b8; margin-top: 4px; }}
   .meta {{ font-size: 0.75rem; color: #475569; margin-top: 8px; }}
-  .summary-row {{ display: flex; gap: 12px; align-items: stretch; margin-bottom: 16px; flex-wrap: wrap; }}
+  .summary-row {{ display: flex; gap: 12px; align-items: stretch; margin-bottom: 12px; flex-wrap: wrap; }}
   .summary-main {{ flex: 1 1 200px; margin-bottom: 0; }}
   .summary-side {{ display: flex; flex-direction: column; gap: 12px; min-width: 120px; flex: 0 0 auto; }}
+  .summary-bottom {{ display: flex; gap: 12px; margin-bottom: 16px; }}
+  .summary-bottom .stat-card {{ flex: 1; }}
   .stat-card {{ background: #1e293b; border-radius: 12px; padding: 10px 16px;
                text-align: center; flex: 1; display: flex; flex-direction: column;
                justify-content: center; }}
@@ -210,9 +275,11 @@ def index() -> Response:
   <div class="chart-controls">
     <button class="btn-toggle" id="btnDaily" onclick="setMode('daily')">Daily avg</button>
     <button class="btn-toggle inactive" id="btnAll" onclick="setMode('all')">All readings</button>
-    <button class="btn-reset-zoom" onclick="chart.resetZoom()">Reset zoom</button>
+    <button class="btn-toggle inactive" id="btnPrices" onclick="setMode('prices')">Oil prices</button>
+    <button class="btn-reset-zoom" onclick="activeChart().resetZoom()">Reset zoom</button>
   </div>
-  <canvas id="chart"></canvas>
+  <canvas id="chartLevel"></canvas>
+  <canvas id="chartPrices" style="display:none"></canvas>
 </div>
 {"" if not annotated_url else f'''<div class="image-wrap">
   <div class="label" style="margin-bottom:10px">Latest Detection &nbsp;&bull;&nbsp; {short_time}</div>
@@ -244,6 +311,8 @@ async function captureNow() {{
 <script>
 const rawLabels = {labels};
 const rawValues = {values};
+const priceLabels = {price_labels};
+const priceValues = {price_values};
 
 function computeDailyData(lbs, vals) {{
   const buckets = {{}};
@@ -277,7 +346,11 @@ const initDaily = computeDailyData(rawLabels, rawValues);
 const initRange = yRange(initDaily.values);
 let currentMode = "daily";
 
-const chart = new Chart(document.getElementById("chart"), {{
+function makeZoomPlugin() {{
+  return {{ pan: {{ enabled: true, mode: "x" }}, zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }} }};
+}}
+
+const chartLevel = new Chart(document.getElementById("chartLevel"), {{
   type: "line",
   data: {{
     labels: initDaily.labels,
@@ -296,10 +369,7 @@ const chart = new Chart(document.getElementById("chart"), {{
   options: {{
     responsive: true,
     scales: {{
-      x: {{
-        ticks: {{ color: "#64748b", maxTicksLimit: 8 }},
-        grid: {{ color: "#1e293b" }}
-      }},
+      x: {{ ticks: {{ color: "#64748b", maxTicksLimit: 8 }}, grid: {{ color: "#1e293b" }} }},
       y: {{
         min: initRange.min,
         max: initRange.max,
@@ -309,44 +379,81 @@ const chart = new Chart(document.getElementById("chart"), {{
     }},
     plugins: {{
       legend: {{ display: false }},
-      tooltip: {{
-        callbacks: {{
-          title: function(items) {{
-            const i = items[0].dataIndex;
-            return currentMode === "all" ? rawLabels[i].slice(0, 16) : chart.data.labels[i];
-          }}
-        }}
-      }},
-      zoom: {{
-        pan:  {{ enabled: true, mode: "x" }},
-        zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }}
-      }}
+      tooltip: {{ callbacks: {{ title: function(items) {{
+        const i = items[0].dataIndex;
+        return currentMode === "all" ? rawLabels[i].slice(0, 16) : chartLevel.data.labels[i];
+      }} }} }},
+      zoom: makeZoomPlugin()
     }}
   }}
 }});
 
+const chartPrices = new Chart(document.getElementById("chartPrices"), {{
+  type: "line",
+  data: {{
+    labels: priceLabels,
+    datasets: [{{
+      label: "Heating Oil ($/gal)",
+      data: priceValues,
+      borderColor: "#fb923c",
+      backgroundColor: "rgba(251,146,60,0.1)",
+      borderWidth: 2,
+      pointRadius: 4,
+      pointHoverRadius: 6,
+      fill: true,
+      tension: 0.3,
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    scales: {{
+      x: {{ ticks: {{ color: "#64748b", maxTicksLimit: 8 }}, grid: {{ color: "#1e293b" }} }},
+      y: {{
+        ticks: {{ color: "#64748b", callback: v => "$" + v.toFixed(2) }},
+        grid: {{ color: "#334155" }}
+      }}
+    }},
+    plugins: {{
+      legend: {{ display: false }},
+      zoom: makeZoomPlugin()
+    }}
+  }}
+}});
+
+function activeChart() {{
+  return currentMode === "prices" ? chartPrices : chartLevel;
+}}
+
 function setMode(mode) {{
   if (mode === currentMode) return;
   currentMode = mode;
-  let newLabels, newValues;
-  if (mode === "daily") {{
-    const d = computeDailyData(rawLabels, rawValues);
-    newLabels = d.labels;
-    newValues = d.values;
+
+  if (mode === "prices") {{
+    document.getElementById("chartLevel").style.display = "none";
+    document.getElementById("chartPrices").style.display = "block";
   }} else {{
-    newLabels = allLabels;
-    newValues = rawValues;
+    document.getElementById("chartPrices").style.display = "none";
+    document.getElementById("chartLevel").style.display = "block";
+    let newLabels, newValues;
+    if (mode === "daily") {{
+      const d = computeDailyData(rawLabels, rawValues);
+      newLabels = d.labels; newValues = d.values;
+    }} else {{
+      newLabels = allLabels; newValues = rawValues;
+    }}
+    const range = yRange(newValues);
+    chartLevel.data.labels = newLabels;
+    chartLevel.data.datasets[0].data = newValues;
+    chartLevel.data.datasets[0].pointRadius = newValues.length < 60 ? 4 : 0;
+    chartLevel.options.scales.y.min = range.min;
+    chartLevel.options.scales.y.max = range.max;
+    chartLevel.resetZoom();
+    chartLevel.update();
   }}
-  const range = yRange(newValues);
-  chart.data.labels = newLabels;
-  chart.data.datasets[0].data = newValues;
-  chart.data.datasets[0].pointRadius = newValues.length < 60 ? 4 : 0;
-  chart.options.scales.y.min = range.min;
-  chart.options.scales.y.max = range.max;
-  chart.resetZoom();
-  chart.update();
+
   document.getElementById("btnAll").classList.toggle("inactive", mode !== "all");
   document.getElementById("btnDaily").classList.toggle("inactive", mode !== "daily");
+  document.getElementById("btnPrices").classList.toggle("inactive", mode !== "prices");
 }}
 </script>
 </body>
