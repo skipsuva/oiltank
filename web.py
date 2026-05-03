@@ -167,6 +167,12 @@ def index() -> Response:
   .stat-val {{ font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-top: 6px; }}
   .chart-wrap {{ background: #1e293b; border-radius: 12px; padding: 16px; }}
   canvas {{ width: 100% !important; }}
+  .chart-controls {{ display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }}
+  .btn-toggle {{ font-size:0.8rem; font-weight:600; padding:6px 14px; border-radius:8px;
+                border:none; cursor:pointer; background:#38bdf8; color:#0f172a; }}
+  .btn-toggle.inactive {{ background:#1e293b; color:#64748b; border:1px solid #334155; }}
+  .btn-reset-zoom {{ font-size:0.8rem; cursor:pointer; background:none; border:none;
+                    color:#475569; text-decoration:underline; margin-left:auto; padding:0; }}
   .image-wrap {{ background: #1e293b; border-radius: 12px; padding: 16px;
                  margin-top: 16px; text-align: center; }}
   .image-wrap img {{ max-width: 100%; border-radius: 8px; display: block; margin: 0 auto; }}
@@ -179,6 +185,11 @@ def index() -> Response:
 </div>
 {summary_html}
 <div class="chart-wrap">
+  <div class="chart-controls">
+    <button class="btn-toggle" id="btnDaily" onclick="setMode('daily')">Daily avg</button>
+    <button class="btn-toggle inactive" id="btnAll" onclick="setMode('all')">All readings</button>
+    <button class="btn-reset-zoom" onclick="chart.resetZoom()">Reset zoom</button>
+  </div>
   <canvas id="chart"></canvas>
 </div>
 {"" if not annotated_url else f'''<div class="image-wrap">
@@ -206,21 +217,55 @@ async function captureNow() {{
 }}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2/dist/chartjs-plugin-zoom.min.js"></script>
 <script>
-const labels = {labels};
-const values = {values};
+const rawLabels = {labels};
+const rawValues = {values};
 
-new Chart(document.getElementById("chart"), {{
+function computeDailyData(lbs, vals) {{
+  const buckets = {{}};
+  lbs.forEach(function(ts, i) {{
+    const day = ts.slice(0, 10);
+    if (!buckets[day]) buckets[day] = [];
+    buckets[day].push(vals[i]);
+  }});
+  const days = Object.keys(buckets).sort();
+  return {{
+    labels: days.map(d => d.slice(5)),
+    values: days.map(function(d) {{
+      const a = buckets[d];
+      return Math.round(a.reduce((s, v) => s + v, 0) / a.length * 10) / 10;
+    }})
+  }};
+}}
+
+function yRange(vals) {{
+  const mn = Math.min(...vals);
+  const mx = Math.max(...vals);
+  const pad = Math.max((mx - mn) * 0.25, 6);
+  return {{
+    min: Math.max(0,   Math.round((mn - pad) * 10) / 10),
+    max: Math.min(100, Math.round((mx + pad) * 10) / 10)
+  }};
+}}
+
+const allLabels = rawLabels.map(s => s.slice(5, 10));
+const initDaily = computeDailyData(rawLabels, rawValues);
+const initRange = yRange(initDaily.values);
+let currentMode = "daily";
+
+const chart = new Chart(document.getElementById("chart"), {{
   type: "line",
   data: {{
-    labels,
+    labels: initDaily.labels,
     datasets: [{{
       label: "Tank Level (%)",
-      data: values,
+      data: initDaily.values,
       borderColor: "#38bdf8",
       backgroundColor: "rgba(56,189,248,0.1)",
       borderWidth: 2,
-      pointRadius: values.length < 60 ? 4 : 0,
+      pointRadius: 4,
       pointHoverRadius: 6,
       fill: true,
       tension: 0.3,
@@ -230,25 +275,57 @@ new Chart(document.getElementById("chart"), {{
     responsive: true,
     scales: {{
       x: {{
-        ticks: {{ color: "#64748b", maxTicksLimit: 6,
-                  callback: function(val, i) {{
-                    const s = labels[i] || "";
-                    return s.slice(5, 16); // "MM-DD HH:MM"
-                  }} }},
+        ticks: {{ color: "#64748b", maxTicksLimit: 8 }},
         grid: {{ color: "#1e293b" }}
       }},
       y: {{
-        min: 0, max: 100,
+        min: initRange.min,
+        max: initRange.max,
         ticks: {{ color: "#64748b", callback: v => v + "%" }},
         grid: {{ color: "#334155" }}
       }}
     }},
     plugins: {{
       legend: {{ display: false }},
-      annotation: {{}}
+      tooltip: {{
+        callbacks: {{
+          title: function(items) {{
+            const i = items[0].dataIndex;
+            return currentMode === "all" ? rawLabels[i].slice(0, 16) : chart.data.labels[i];
+          }}
+        }}
+      }},
+      zoom: {{
+        pan:  {{ enabled: true, mode: "x" }},
+        zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }}
+      }}
     }}
   }}
 }});
+
+function setMode(mode) {{
+  if (mode === currentMode) return;
+  currentMode = mode;
+  let newLabels, newValues;
+  if (mode === "daily") {{
+    const d = computeDailyData(rawLabels, rawValues);
+    newLabels = d.labels;
+    newValues = d.values;
+  }} else {{
+    newLabels = allLabels;
+    newValues = rawValues;
+  }}
+  const range = yRange(newValues);
+  chart.data.labels = newLabels;
+  chart.data.datasets[0].data = newValues;
+  chart.data.datasets[0].pointRadius = newValues.length < 60 ? 4 : 0;
+  chart.options.scales.y.min = range.min;
+  chart.options.scales.y.max = range.max;
+  chart.resetZoom();
+  chart.update();
+  document.getElementById("btnAll").classList.toggle("inactive", mode !== "all");
+  document.getElementById("btnDaily").classList.toggle("inactive", mode !== "daily");
+}}
 </script>
 </body>
 </html>"""
