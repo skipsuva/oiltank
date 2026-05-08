@@ -19,7 +19,8 @@
       "Bash(venv/bin/python:*)",
       "WebFetch(domain:www.eia.gov)",
       "WebFetch(domain:pypi.org)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git:*)"
     ]
   }
 }
