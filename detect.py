@@ -157,11 +157,15 @@ def detect_level(image_bgr: np.ndarray) -> DetectionResult:
     mask = cv2.dilate(mask, kernel, iterations=2)
 
     # ------------------------------------------------------------------
-    # 4. Find contours and pick the largest blob.
+    # 4. Find contours and pick the topmost blob that meets the size threshold.
+    #    When multiple blobs are present (e.g. reflections below the float),
+    #    the highest one (smallest centroid y) is the actual float position.
     # ------------------------------------------------------------------
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    if not contours:
+    valid = [c for c in contours if cv2.contourArea(c) >= min_blob_area]
+
+    if not valid:
         _draw_no_detection(annotated, tube_top_y, tube_bottom_y, tube_left_x, tube_right_x)
         return DetectionResult(
             y_px=None,
@@ -171,18 +175,12 @@ def detect_level(image_bgr: np.ndarray) -> DetectionResult:
             annotated_image=annotated,
         )
 
-    largest = max(contours, key=cv2.contourArea)
+    def _centroid_y(c) -> float:
+        M = cv2.moments(c)
+        return M["m01"] / M["m00"] if M["m00"] != 0 else float("inf")
+
+    largest = min(valid, key=_centroid_y)
     area = cv2.contourArea(largest)
-
-    if area < min_blob_area:
-        _draw_no_detection(annotated, tube_top_y, tube_bottom_y, tube_left_x, tube_right_x)
-        return DetectionResult(
-            y_px=None,
-            level_label="UNKNOWN",
-            percentage=0.0,
-            confidence=0.0,
-            annotated_image=annotated,
-        )
 
     # ------------------------------------------------------------------
     # 5. Compute centroid and level fraction.

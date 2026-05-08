@@ -76,12 +76,17 @@ def _load_readings() -> list[dict]:
                 "percentage": round(pct * 100, 1),
                 "confidence": row.get("confidence", ""),
                 "image_path": row.get("image_path", ""),
+                "is_refill": row.get("level_label", "") == "REFILL",
             })
     return rows
 
 
 def _consumption_since(rows: list[dict], hours: float) -> float | None:
-    """Return percentage-point drop over the past `hours` hours, or None if insufficient data."""
+    """Return percentage-point drop over the past `hours` hours, or None if insufficient data.
+
+    If a REFILL event occurred within the window, consumption is measured only since the
+    most recent such refill (using its post-refill level as baseline).
+    """
     if len(rows) < 2:
         return None
     last = rows[-1]
@@ -89,10 +94,34 @@ def _consumption_since(rows: list[dict], hours: float) -> float | None:
         current_dt = datetime.strptime(last["timestamp"], "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
-    target_dt = current_dt - timedelta(hours=hours)
+
+    window_start_dt = current_dt - timedelta(hours=hours)
+
+    # Find the most recent REFILL within the window (iterate newest-first)
+    latest_refill = None
+    for r in reversed(rows[:-1]):
+        if not r.get("is_refill"):
+            continue
+        try:
+            dt = datetime.strptime(r["timestamp"], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        if dt >= window_start_dt:
+            latest_refill = r
+            break
+
+    if latest_refill is not None:
+        if last.get("is_refill"):
+            return None  # no post-refill readings yet
+        return round(latest_refill["percentage"] - last["percentage"], 1)
+
+    # No refill in window — original logic, skipping REFILL rows as candidates
+    target_dt = window_start_dt
     min_age_hours = hours * 0.5
     best, best_diff = None, None
     for r in rows[:-1]:
+        if r.get("is_refill"):
+            continue
         try:
             dt = datetime.strptime(r["timestamp"], "%Y-%m-%d %H:%M:%S")
         except ValueError:
@@ -171,7 +200,8 @@ def index() -> Response:
 
     # Build JS arrays for Chart.js
     labels = json.dumps([r["timestamp"] for r in rows])
-    values = json.dumps([r["percentage"] for r in rows])
+    values = json.dumps([None if r["is_refill"] else r["percentage"] for r in rows])
+    refill_ts = json.dumps([r["timestamp"] for r in rows if r["is_refill"]])
     price_labels = json.dumps([r["period"][5:] for r in prices_rows])
     price_values = json.dumps([r["price"] for r in prices_rows])
 
@@ -335,13 +365,23 @@ async function captureNow() {{
 <script>
 const rawLabels = {labels};
 const rawValues = {values};
+const refillTimestamps = {refill_ts};
 const priceLabels = {price_labels};
 const priceValues = {price_values};
 
-function computeDailyData(lbs, vals) {{
+function computeDailyData(lbs, vals, refills) {{
+  // Build a map of day → latest refill timestamp for that day
+  const refillCutoff = {{}};
+  refills.forEach(function(ts) {{
+    const day = ts.slice(0, 10);
+    if (!refillCutoff[day] || ts > refillCutoff[day]) refillCutoff[day] = ts;
+  }});
   const buckets = {{}};
   lbs.forEach(function(ts, i) {{
+    if (vals[i] === null) return;
     const day = ts.slice(0, 10);
+    // On a refill day, skip readings that occurred at or before the refill
+    if (refillCutoff[day] && ts <= refillCutoff[day]) return;
     if (!buckets[day]) buckets[day] = [];
     buckets[day].push(vals[i]);
   }});
@@ -350,14 +390,17 @@ function computeDailyData(lbs, vals) {{
     labels: days.map(d => d.slice(5)),
     values: days.map(function(d) {{
       const a = buckets[d];
+      if (!a || a.length === 0) return null;
       return Math.round(a.reduce((s, v) => s + v, 0) / a.length * 10) / 10;
     }})
   }};
 }}
 
 function yRange(vals) {{
-  const mn = Math.min(...vals);
-  const mx = Math.max(...vals);
+  const numeric = vals.filter(v => v !== null);
+  if (numeric.length === 0) return {{ min: 0, max: 100 }};
+  const mn = Math.min(...numeric);
+  const mx = Math.max(...numeric);
   const pad = Math.max((mx - mn) * 0.25, 6);
   return {{
     min: Math.max(0,   Math.round((mn - pad) * 10) / 10),
@@ -366,7 +409,7 @@ function yRange(vals) {{
 }}
 
 const allLabels = rawLabels.map(s => s.slice(5, 10));
-const initDaily = computeDailyData(rawLabels, rawValues);
+const initDaily = computeDailyData(rawLabels, rawValues, refillTimestamps);
 const initRange = yRange(initDaily.values);
 let currentMode = "daily";
 
@@ -388,6 +431,7 @@ const chartLevel = new Chart(document.getElementById("chartLevel"), {{
       pointHoverRadius: 6,
       fill: true,
       tension: 0.3,
+      spanGaps: false,
     }}]
   }},
   options: {{
@@ -460,7 +504,7 @@ function setMode(mode) {{
     document.getElementById("chartLevel").style.display = "block";
     let newLabels, newValues;
     if (mode === "daily") {{
-      const d = computeDailyData(rawLabels, rawValues);
+      const d = computeDailyData(rawLabels, rawValues, refillTimestamps);
       newLabels = d.labels; newValues = d.values;
     }} else {{
       newLabels = allLabels; newValues = rawValues;

@@ -139,16 +139,14 @@ def main() -> None:
     if len(sys.argv) > 1:
         img_path = Path(sys.argv[1])
     else:
-        candidates = sorted(
-            (p for p in IMAGES_DIR.glob("*.jpg")
-             if "_annotated" not in p.name
-             and "calibration" not in p.name),
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not candidates:
-            print("No images found in images/. Run capture.py first.", file=sys.stderr)
+        print("Capturing image from camera...")
+        try:
+            from capture import capture_image
+            img_path, _ = capture_image()
+            print(f"Captured: {img_path}")
+        except Exception as exc:
+            print(f"ERROR: Camera capture failed: {exc}", file=sys.stderr)
             sys.exit(1)
-        img_path = candidates[-1]
 
     img = cv2.imread(str(img_path))
     if img is None:
