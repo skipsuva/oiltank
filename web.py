@@ -60,6 +60,14 @@ def _aggregate_daily_burns(sessions: list[dict]) -> tuple[list, list, list]:
     return labels, values, days
 
 
+def _fmt_burn_duration(seconds: float) -> str:
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    h, m = divmod(minutes, 60)
+    return f"{h}h {m}m" if m else f"{h}h"
+
+
 def _load_prices() -> list[dict]:
     """Return all price rows sorted by period ascending. Empty list on any error."""
     cfg = _load_config()
@@ -212,6 +220,36 @@ def index() -> Response:
     furnace_sessions = _load_furnace_burns()
     burn_labels, burn_values, burn_dates = _aggregate_daily_burns(furnace_sessions)
 
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    week_cutoff_str = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    sorted_sessions = sorted(furnace_sessions, key=lambda s: s.get("start_time", ""))
+    last_burn_val = "—"
+    last_burn_meta = ""
+    if sorted_sessions:
+        s = sorted_sessions[-1]
+        last_burn_val = _fmt_burn_duration(s.get("duration_seconds", 0))
+        ts = s.get("start_time", "")
+        try:
+            last_dt = datetime.strptime(ts[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+            time_str = last_dt.strftime("%-I:%M%p").lower()
+            day = ts[:10]
+            if day == today_str:
+                last_burn_meta = f"today {time_str}"
+            elif day == (now - timedelta(days=1)).strftime("%Y-%m-%d"):
+                last_burn_meta = f"yesterday {time_str}"
+            else:
+                last_burn_meta = last_dt.strftime("%b %-d")
+        except ValueError:
+            last_burn_meta = ts[:10]
+
+    today_secs = sum(s.get("duration_seconds", 0) for s in furnace_sessions if s.get("start_time", "")[:10] == today_str)
+    today_burn_val = _fmt_burn_duration(today_secs) if today_secs else "—"
+
+    week_secs = sum(s.get("duration_seconds", 0) for s in furnace_sessions if s.get("start_time", "")[:10] >= week_cutoff_str)
+    week_burn_val = _fmt_burn_duration(week_secs) if week_secs else "—"
+
     price_html = f"${price:.2f}/gal" if price is not None else "—"
     if prices_rows:
         try:
@@ -287,6 +325,21 @@ def index() -> Response:
           <div class="stat-card">
             <div class="label">Est. refill</div>
             <div class="stat-val">{refill_cost_html}</div>
+          </div>
+        </div>
+        <div class="summary-bottom">
+          <div class="stat-card">
+            <div class="label">Last burn</div>
+            <div class="stat-val">{last_burn_val}</div>
+            {"" if not last_burn_meta else f'<div class="meta">{last_burn_meta}</div>'}
+          </div>
+          <div class="stat-card">
+            <div class="label">Today</div>
+            <div class="stat-val">{today_burn_val}</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">This week</div>
+            <div class="stat-val">{week_burn_val}</div>
           </div>
         </div>"""
     else:
