@@ -10,6 +10,7 @@ import csv
 import json
 import subprocess
 import sys
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -30,6 +31,33 @@ def _load_config() -> dict:
             return json.load(fh)
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+FURNACE_API_URL = "http://100.106.202.5:8080/api/burns?days=365"
+
+
+def _load_furnace_burns() -> list[dict]:
+    """Fetch burn sessions from furnace monitor Pi. Returns [] on any error."""
+    try:
+        with urllib.request.urlopen(FURNACE_API_URL, timeout=5) as resp:
+            payload = json.loads(resp.read())
+        return payload.get("sessions", [])
+    except Exception:
+        return []
+
+
+def _aggregate_daily_burns(sessions: list[dict]) -> tuple[list, list, list]:
+    """Return (labels, values, dates) — MM-DD labels, burn minutes per day, and YYYY-MM-DD dates."""
+    buckets: dict[str, float] = {}
+    for s in sessions:
+        day = s.get("start_time", "")[:10]  # YYYY-MM-DD
+        if not day:
+            continue
+        buckets[day] = buckets.get(day, 0) + s.get("duration_seconds", 0)
+    days = sorted(buckets)
+    labels = [d[5:] for d in days]           # MM-DD
+    values = [round(buckets[d] / 60, 1) for d in days]  # seconds → minutes
+    return labels, values, days
 
 
 def _load_prices() -> list[dict]:
@@ -181,6 +209,8 @@ def index() -> Response:
     week_html = _fmt_usage(week_usage)
 
     prices_rows = _load_prices()
+    furnace_sessions = _load_furnace_burns()
+    burn_labels, burn_values, burn_dates = _aggregate_daily_burns(furnace_sessions)
 
     price_html = f"${price:.2f}/gal" if price is not None else "—"
     if prices_rows:
@@ -203,7 +233,11 @@ def index() -> Response:
     values = json.dumps([None if r["is_refill"] else r["percentage"] for r in rows])
     refill_ts = json.dumps([r["timestamp"] for r in rows if r["is_refill"]])
     price_labels = json.dumps([r["period"][5:] for r in prices_rows])
+    price_periods = json.dumps([r["period"] for r in prices_rows])
     price_values = json.dumps([r["price"] for r in prices_rows])
+    burn_labels_js = json.dumps(burn_labels)
+    burn_values_js = json.dumps(burn_values)
+    burn_dates_js = json.dumps(burn_dates)
 
     annotated_url = None
     if last and last.get("image_path"):
@@ -271,10 +305,15 @@ def index() -> Response:
   .header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }}
   h1 {{ font-size: 1.2rem; font-weight: 600;
         color: #94a3b8; letter-spacing: 0.05em; text-transform: uppercase; }}
+  .header-actions {{ display: flex; gap: 8px; align-items: center; }}
   .btn-capture {{ font-size: 0.8rem; font-weight: 600; padding: 6px 14px;
                   border-radius: 8px; border: none; cursor: pointer;
                   background: #38bdf8; color: #0f172a; transition: opacity 0.15s; }}
   .btn-capture:disabled {{ opacity: 0.5; cursor: not-allowed; }}
+  .btn-refresh {{ font-size: 1rem; padding: 6px 10px; border-radius: 8px; border: none;
+                  cursor: pointer; background: #1e293b; color: #94a3b8;
+                  transition: color 0.15s; line-height: 1; }}
+  .btn-refresh:hover {{ color: #e2e8f0; }}
   .card {{ background: #1e293b; border-radius: 12px; padding: 20px;
             margin-bottom: 16px; text-align: center; }}
   .label {{ font-size: 0.8rem; color: #64748b; text-transform: uppercase;
@@ -297,8 +336,11 @@ def index() -> Response:
   .btn-toggle {{ font-size:0.8rem; font-weight:600; padding:6px 14px; border-radius:8px;
                 border:none; cursor:pointer; background:#38bdf8; color:#0f172a; }}
   .btn-toggle.inactive {{ background:#1e293b; color:#64748b; border:1px solid #334155; }}
-  .btn-reset-zoom {{ font-size:0.8rem; cursor:pointer; background:none; border:none;
-                    color:#475569; text-decoration:underline; margin-left:auto; padding:0; }}
+  .range-controls {{ display:flex; gap:2px; margin-bottom:12px; }}
+  .btn-range {{ font-size:0.72rem; font-weight:600; padding:4px 8px; border-radius:20px;
+               border:none; cursor:pointer; background:transparent; color:#475569;
+               letter-spacing:0.02em; }}
+  .btn-range.active {{ background:#0f172a; color:#38bdf8; }}
   .image-wrap {{ background: #1e293b; border-radius: 12px; padding: 16px;
                  margin-top: 16px; text-align: center; }}
   .image-wrap img {{ max-width: 100%; border-radius: 8px; display: block; margin: 0 auto; }}
@@ -315,7 +357,10 @@ def index() -> Response:
 <body>
 <div class="header">
   <h1>Oil Tank Monitor</h1>
-  <button class="btn-capture" id="captureBtn" onclick="captureNow()">Capture level now</button>
+  <div class="header-actions">
+    <button class="btn-capture" id="captureBtn" onclick="captureNow()">Measure now</button>
+    <button class="btn-refresh" title="Refresh" onclick="location.reload()">&#x21bb;</button>
+  </div>
 </div>
 {summary_html}
 <div class="chart-wrap">
@@ -323,10 +368,22 @@ def index() -> Response:
     <button class="btn-toggle" id="btnDaily" onclick="setMode('daily')">Daily avg</button>
     <button class="btn-toggle inactive" id="btnAll" onclick="setMode('all')">All readings</button>
     <button class="btn-toggle inactive" id="btnPrices" onclick="setMode('prices')">Oil prices</button>
-    <button class="btn-reset-zoom" onclick="activeChart().resetZoom()">Reset zoom</button>
+    <button class="btn-toggle inactive" id="btnFurnace" onclick="setMode('furnace')">Furnace</button>
+  </div>
+  <div class="range-controls">
+    <button class="btn-range" data-range="1D" onclick="setRange('1D')">1D</button>
+    <button class="btn-range active" data-range="1W" onclick="setRange('1W')">1W</button>
+    <button class="btn-range" data-range="1M" onclick="setRange('1M')">1M</button>
+    <button class="btn-range" data-range="3M" onclick="setRange('3M')">3M</button>
+    <button class="btn-range" data-range="6M" onclick="setRange('6M')">6M</button>
+    <button class="btn-range" data-range="YTD" onclick="setRange('YTD')">YTD</button>
+    <button class="btn-range" data-range="1Y" onclick="setRange('1Y')">1Y</button>
+    <button class="btn-range" data-range="2Y" onclick="setRange('2Y')">2Y</button>
+    <button class="btn-range" data-range="ALL" onclick="setRange('ALL')">ALL</button>
   </div>
   <canvas id="chartLevel"></canvas>
   <canvas id="chartPrices" style="display:none"></canvas>
+  <canvas id="chartFurnace" style="display:none"></canvas>
 </div>
 <div class="price-entry-wrap">
   <span class="label">Add price</span>
@@ -351,23 +408,25 @@ async function captureNow() {{
       location.reload();
     }} else {{
       btn.textContent = "Failed";
-      setTimeout(() => {{ btn.disabled = false; btn.textContent = "Capture level now"; }}, 3000);
+      setTimeout(() => {{ btn.disabled = false; btn.textContent = "Measure now"; }}, 3000);
     }}
   }} catch (e) {{
     btn.textContent = "Error";
-    setTimeout(() => {{ btn.disabled = false; btn.textContent = "Capture level now"; }}, 3000);
+    setTimeout(() => {{ btn.disabled = false; btn.textContent = "Measure now"; }}, 3000);
   }}
 }}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hammerjs@2/hammer.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2/dist/chartjs-plugin-zoom.min.js"></script>
 <script>
 const rawLabels = {labels};
 const rawValues = {values};
 const refillTimestamps = {refill_ts};
 const priceLabels = {price_labels};
+const pricePeriods = {price_periods};
 const priceValues = {price_values};
+const burnLabels = {burn_labels_js};
+const burnValues = {burn_values_js};
+const burnDates = {burn_dates_js};
 
 function computeDailyData(lbs, vals, refills) {{
   // Build a map of day → latest refill timestamp for that day
@@ -408,14 +467,11 @@ function yRange(vals) {{
   }};
 }}
 
-const allLabels = rawLabels.map(s => s.slice(5, 10));
 const initDaily = computeDailyData(rawLabels, rawValues, refillTimestamps);
 const initRange = yRange(initDaily.values);
 let currentMode = "daily";
-
-function makeZoomPlugin() {{
-  return {{ pan: {{ enabled: true, mode: "x" }}, zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }} }};
-}}
+let currentRange = "1W";
+let activeRawLabels = rawLabels.slice();
 
 const chartLevel = new Chart(document.getElementById("chartLevel"), {{
   type: "line",
@@ -449,9 +505,8 @@ const chartLevel = new Chart(document.getElementById("chartLevel"), {{
       legend: {{ display: false }},
       tooltip: {{ callbacks: {{ title: function(items) {{
         const i = items[0].dataIndex;
-        return currentMode === "all" ? rawLabels[i].slice(0, 16) : chartLevel.data.labels[i];
-      }} }} }},
-      zoom: makeZoomPlugin()
+        return currentMode === "all" ? activeRawLabels[i].slice(0, 16) : chartLevel.data.labels[i];
+      }} }} }}
     }}
   }}
 }});
@@ -481,33 +536,84 @@ const chartPrices = new Chart(document.getElementById("chartPrices"), {{
         grid: {{ color: "#334155" }}
       }}
     }},
+    plugins: {{ legend: {{ display: false }} }}
+  }}
+}});
+
+const chartFurnace = new Chart(document.getElementById("chartFurnace"), {{
+  type: "bar",
+  data: {{
+    labels: burnLabels,
+    datasets: [{{
+      label: "Burn time (min)",
+      data: burnValues,
+      backgroundColor: "rgba(251,191,36,0.7)",
+      borderColor: "#fbbf24",
+      borderWidth: 1,
+      borderRadius: 3,
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    maintainAspectRatio: true,
     plugins: {{
       legend: {{ display: false }},
-      zoom: makeZoomPlugin()
+      tooltip: {{ callbacks: {{ label: ctx => ctx.parsed.y.toFixed(1) + " min" }} }},
+    }},
+    scales: {{
+      x: {{ ticks: {{ color: "#94a3b8", maxRotation: 45 }}, grid: {{ color: "#1e293b" }} }},
+      y: {{
+        beginAtZero: true,
+        ticks: {{ color: "#94a3b8", callback: v => v + " min" }},
+        grid: {{ color: "#334155" }},
+      }}
     }}
   }}
 }});
 
-function activeChart() {{
-  return currentMode === "prices" ? chartPrices : chartLevel;
+function cutoffDateStr(range) {{
+  if (range === "ALL") return null;
+  const now = new Date();
+  if (range === "YTD") return now.getFullYear() + "-01-01";
+  const daysMap = {{ "1D": 1, "1W": 7, "1M": 30, "3M": 91, "6M": 182, "1Y": 365, "2Y": 730 }};
+  const d = new Date(now - daysMap[range] * 864e5);
+  return d.toISOString().slice(0, 10);
 }}
 
-function setMode(mode) {{
-  if (mode === currentMode) return;
-  currentMode = mode;
+function applyRange() {{
+  const cutoff = cutoffDateStr(currentRange);
 
-  if (mode === "prices") {{
-    document.getElementById("chartLevel").style.display = "none";
-    document.getElementById("chartPrices").style.display = "block";
+  if (currentMode === "prices") {{
+    const pairs = pricePeriods.reduce(function(acc, p, i) {{
+      if (!cutoff || p >= cutoff) acc.push({{ label: p.slice(5), val: priceValues[i] }});
+      return acc;
+    }}, []);
+    chartPrices.data.labels = pairs.map(x => x.label);
+    chartPrices.data.datasets[0].data = pairs.map(x => x.val);
+    chartPrices.update();
+
+  }} else if (currentMode === "furnace") {{
+    const pairs = burnDates.reduce(function(acc, d, i) {{
+      if (!cutoff || d >= cutoff) acc.push({{ label: burnLabels[i], val: burnValues[i] }});
+      return acc;
+    }}, []);
+    chartFurnace.data.labels = pairs.map(x => x.label);
+    chartFurnace.data.datasets[0].data = pairs.map(x => x.val);
+    chartFurnace.update();
+
   }} else {{
-    document.getElementById("chartPrices").style.display = "none";
-    document.getElementById("chartLevel").style.display = "block";
+    const filtLbls = cutoff ? rawLabels.filter(ts => ts >= cutoff) : rawLabels;
+    const filtVals = cutoff ? rawValues.filter((_, i) => rawLabels[i] >= cutoff) : rawValues;
+    const filtRefills = cutoff ? refillTimestamps.filter(ts => ts >= cutoff) : refillTimestamps;
+    activeRawLabels = filtLbls;
+
     let newLabels, newValues;
-    if (mode === "daily") {{
-      const d = computeDailyData(rawLabels, rawValues, refillTimestamps);
+    if (currentMode === "daily") {{
+      const d = computeDailyData(filtLbls, filtVals, filtRefills);
       newLabels = d.labels; newValues = d.values;
     }} else {{
-      newLabels = allLabels; newValues = rawValues;
+      newLabels = filtLbls.map(s => s.slice(5, 10));
+      newValues = filtVals;
     }}
     const range = yRange(newValues);
     chartLevel.data.labels = newLabels;
@@ -515,15 +621,43 @@ function setMode(mode) {{
     chartLevel.data.datasets[0].pointRadius = newValues.length < 60 ? 4 : 0;
     chartLevel.options.scales.y.min = range.min;
     chartLevel.options.scales.y.max = range.max;
-    chartLevel.resetZoom();
     chartLevel.update();
   }}
+}}
+
+function setRange(r) {{
+  currentRange = r;
+  document.querySelectorAll(".btn-range").forEach(function(b) {{
+    b.classList.toggle("active", b.dataset.range === r);
+  }});
+  applyRange();
+}}
+
+function setMode(mode) {{
+  if (mode === currentMode) return;
+  currentMode = mode;
+
+  document.getElementById("chartLevel").style.display = "none";
+  document.getElementById("chartPrices").style.display = "none";
+  document.getElementById("chartFurnace").style.display = "none";
+
+  if (mode === "prices") {{
+    document.getElementById("chartPrices").style.display = "block";
+  }} else if (mode === "furnace") {{
+    document.getElementById("chartFurnace").style.display = "block";
+  }} else {{
+    document.getElementById("chartLevel").style.display = "block";
+  }}
+
+  applyRange();
 
   document.getElementById("btnAll").classList.toggle("inactive", mode !== "all");
   document.getElementById("btnDaily").classList.toggle("inactive", mode !== "daily");
   document.getElementById("btnPrices").classList.toggle("inactive", mode !== "prices");
+  document.getElementById("btnFurnace").classList.toggle("inactive", mode !== "furnace");
 }}
 
+applyRange();
 document.getElementById("priceDate").valueAsDate = new Date();
 
 async function submitPrice() {{

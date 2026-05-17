@@ -20,7 +20,8 @@
       "WebFetch(domain:www.eia.gov)",
       "WebFetch(domain:pypi.org)",
       "WebSearch",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(systemctl is-active:*)"
     ]
   }
 }
