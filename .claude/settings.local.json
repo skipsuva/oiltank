@@ -21,7 +21,10 @@
       "WebFetch(domain:pypi.org)",
       "WebSearch",
       "Bash(git:*)",
-      "Bash(systemctl is-active:*)"
+      "Bash(systemctl is-active:*)",
+      "Bash(timedatectl show:*)",
+      "Read(//etc/**)",
+      "Bash(crontab -)"
     ]
   }
 }

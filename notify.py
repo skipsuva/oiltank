@@ -48,6 +48,15 @@ def _post(topic: str, title: str, message: str) -> None:
             )
 
 
+def send_raw(title: str, message: str) -> None:
+    """Send an arbitrary titled notification. Silent no-op if topic is not configured."""
+    config = _load_config()
+    topic = config.get("ntfy_topic", "").strip()
+    if not topic or topic.startswith("https://ntfy.sh/your-secret"):
+        return
+    _post(topic, title, message)
+
+
 def send_notification(result: dict | None, *, failure: bool = False) -> None:
     """
     Send a push notification via ntfy.sh.
@@ -67,7 +76,7 @@ def send_notification(result: dict | None, *, failure: bool = False) -> None:
     warn_thresholds = [float(t) for t in config.get("warn_thresholds", DEFAULT_WARN_THRESHOLDS)]
 
     if failure:
-        title = "Oil tank \u2014 detection failed"
+        title = "Oil tank - detection failed"
         message = "Could not read the sight glass after two attempts. Check the camera."
         _post(topic, title, message)
         return
@@ -82,12 +91,12 @@ def send_notification(result: dict | None, *, failure: bool = False) -> None:
 
     if pct <= low_threshold:
         title = "Oil tank low"
-        message = f"Level: {label} ({pct * 100:.1f}%) \u2014 conf {conf:.2f}"
+        message = f"Level: {label} ({pct * 100:.1f}%) - conf {conf:.2f}"
         _post(topic, title, message)
     else:
         for threshold in sorted(warn_thresholds, reverse=True):
             if pct <= threshold:
                 title = f"Oil tank at {threshold * 100:.0f}%"
-                message = f"Level: {label} ({pct * 100:.1f}%) \u2014 conf {conf:.2f}"
+                message = f"Level: {label} ({pct * 100:.1f}%) - conf {conf:.2f}"
                 _post(topic, title, message)
                 break
