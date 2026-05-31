@@ -37,7 +37,7 @@ CSV_COLUMNS = ["timestamp", "level_label", "percentage", "confidence", "image_pa
 # ---------------------------------------------------------------------------
 # Thresholds
 # ---------------------------------------------------------------------------
-CONFIDENCE_THRESHOLD = 0.5
+CONFIDENCE_THRESHOLD = 0.3
 RETRY_DELAY_SECONDS = 60
 IMAGE_RETENTION_DAYS = 7
 
