@@ -17,8 +17,23 @@ import urllib.request
 from pathlib import Path
 
 CONFIG_PATH = Path("~/oiltank/config.json").expanduser()
+NOTIFIED_STATE_PATH = Path("~/oiltank/logs/notified_thresholds.json").expanduser()
 DEFAULT_LOW_THRESHOLD = 0.25
 DEFAULT_WARN_THRESHOLDS = [0.75, 0.50]
+
+
+def _load_notified() -> set[float]:
+    try:
+        with NOTIFIED_STATE_PATH.open() as fh:
+            return set(json.load(fh))
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+
+def _save_notified(notified: set[float]) -> None:
+    NOTIFIED_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with NOTIFIED_STATE_PATH.open("w") as fh:
+        json.dump(sorted(notified), fh)
 
 
 def _load_config() -> dict:
@@ -89,14 +104,27 @@ def send_notification(result: dict | None, *, failure: bool = False) -> None:
     label = result.get("level_label", "?")
     conf = result.get("confidence", 0.0)
 
+    notified = _load_notified()
+    # Reset any thresholds the level has risen back above.
+    notified = {t for t in notified if pct <= t}
+
+    fired_threshold = None
     if pct <= low_threshold:
-        title = "Oil tank low"
-        message = f"Level: {label} ({pct * 100:.1f}%) - conf {conf:.2f}"
-        _post(topic, title, message)
+        if low_threshold not in notified:
+            title = "Oil tank low"
+            message = f"Level: {label} ({pct * 100:.1f}%) - conf {conf:.2f}"
+            _post(topic, title, message)
+            fired_threshold = low_threshold
     else:
         for threshold in sorted(warn_thresholds, reverse=True):
             if pct <= threshold:
-                title = f"Oil tank at {threshold * 100:.0f}%"
-                message = f"Level: {label} ({pct * 100:.1f}%) - conf {conf:.2f}"
-                _post(topic, title, message)
+                if threshold not in notified:
+                    title = f"Oil tank at {threshold * 100:.0f}%"
+                    message = f"Level: {label} ({pct * 100:.1f}%) - conf {conf:.2f}"
+                    _post(topic, title, message)
+                    fired_threshold = threshold
                 break
+
+    if fired_threshold is not None:
+        notified.add(fired_threshold)
+    _save_notified(notified)
