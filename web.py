@@ -33,7 +33,7 @@ def _load_config() -> dict:
         return {}
 
 
-FURNACE_API_URL = "http://100.106.202.5:8080/api/burns?days=365"
+FURNACE_API_URL = "http://100.124.227.17:8080/api/burns?days=365"
 
 
 def _load_furnace_burns() -> list[dict]:

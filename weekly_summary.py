@@ -15,7 +15,7 @@ from pathlib import Path
 from notify import send_raw
 
 CSV_PATH = Path("~/oiltank/logs/readings.csv").expanduser()
-FURNACE_API_URL = "http://100.106.202.5:8080/api/burns?days=30"
+FURNACE_API_URL = "http://100.124.227.17:8080/api/burns?days=30"
 
 
 # ---------------------------------------------------------------------------
